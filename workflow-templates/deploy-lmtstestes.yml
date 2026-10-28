@@ -36,3 +36,5 @@ jobs:
       project: PROJETO
       image-tag: ${{ inputs.image-tag || github.sha }}
       health-urls: http://127.0.0.1:PORTA/
+    # Necessário para o job enxergar o secret DEPLOY_ENV_FILE do environment
+    secrets: inherit

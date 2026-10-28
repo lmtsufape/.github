@@ -36,6 +36,7 @@ Logs, restart e console dos containers ficam no Portainer (ver `lmtsufape/infra-
 4. **Runner**: libere o repositório no runner group *Default* da organização
    (*Settings → Actions → Runner groups*).
 5. **Workflow**: em *Actions → New workflow*, use o template **Deploy lmtstestes** e ajuste os nomes.
+   O job de deploy precisa de `secrets: inherit`, senão o `DEPLOY_ENV_FILE` chega vazio.
 
 ### Rollback
 

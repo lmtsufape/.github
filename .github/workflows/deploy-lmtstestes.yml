@@ -8,7 +8,8 @@
 #   - environment (padrão "homologacao"), com o secret DEPLOY_ENV_FILE (conteúdo do .env) se houver variáveis
 #   - compose em deploy/lmtstestes/compose.yml com "name: <projeto>" e imagens usando ${IMAGE_TAG}
 #   - repositório liberado no runner group da organização
-#   - job que chama com permissions: { contents: read, packages: read }
+#   - job que chama com permissions: { contents: read, packages: read } e secrets: inherit
+#     (sem inherit, o secret do environment chega vazio no workflow reutilizável)
 name: Deploy lmtstestes
 
 on:
