@@ -1,0 +1,135 @@
+# Workflow reutilizável: deploy de um projeto docker compose no servidor lmtstestes.
+#
+# Roda no runner self-hosted da organização (label "lmtstestes"), que só faz conexões
+# de saída. Fluxo: checkout do compose -> gera .env a partir do secret DEPLOY_ENV_FILE
+# do environment -> pull das imagens do GHCR -> up -d -> verifica URLs -> limpeza.
+#
+# Requisitos no repositório que chama:
+#   - environment (padrão "homologacao"), com o secret DEPLOY_ENV_FILE (conteúdo do .env) se houver variáveis
+#   - compose em deploy/lmtstestes/compose.yml com "name: <projeto>" e imagens usando ${IMAGE_TAG}
+#   - repositório liberado no runner group da organização
+#   - job que chama com permissions: { contents: read, packages: read }
+name: Deploy lmtstestes
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Nome do projeto compose (prefixo de containers e volumes, ex. hvu)
+        required: true
+        type: string
+      image-tag:
+        description: Tag das imagens a implantar (vira IMAGE_TAG no .env)
+        required: true
+        type: string
+      compose-file:
+        description: Caminho do compose de deploy no repositório
+        required: false
+        type: string
+        default: deploy/lmtstestes/compose.yml
+      environment:
+        description: Environment do GitHub com o secret DEPLOY_ENV_FILE
+        required: false
+        type: string
+        default: homologacao
+      health-urls:
+        description: URLs, uma por linha, que devem responder (status < 500) após o deploy
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.project }}
+    runs-on: [self-hosted, lmtstestes]
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-lmtstestes-${{ inputs.project }}
+      cancel-in-progress: false
+    env:
+      COMPOSE_FILE: ${{ inputs.compose-file }}
+      COMPOSE_PROJECT_NAME: ${{ inputs.project }}
+    steps:
+      - name: Checkout do compose
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: ${{ inputs.compose-file }}
+          sparse-checkout-cone-mode: false
+
+      - name: Gerar .env
+        env:
+          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          if [ -z "$DEPLOY_ENV_FILE" ]; then
+            echo "::warning::Secret DEPLOY_ENV_FILE não definido no environment; .env terá só IMAGE_TAG"
+          fi
+          umask 077
+          env_path="$(dirname "$COMPOSE_FILE")/.env"
+          printf '%s\n' "$DEPLOY_ENV_FILE" > "$env_path"
+          printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$env_path"
+
+      - name: Login no GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Validar compose
+        run: docker compose config --quiet
+
+      - name: Pull das imagens
+        run: docker compose pull --quiet
+
+      - name: Subir containers
+        run: docker compose up -d --remove-orphans --wait --wait-timeout 300
+
+      - name: Verificar URLs
+        if: inputs.health-urls != ''
+        env:
+          HEALTH_URLS: ${{ inputs.health-urls }}
+        run: |
+          for url in $HEALTH_URLS; do
+            code=000
+            for _ in $(seq 1 36); do
+              code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$url" || true)
+              if [ "$code" != "000" ] && [ "$code" -lt 500 ]; then break; fi
+              sleep 5
+            done
+            echo "$url -> $code"
+            if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
+              echo "::error::$url não respondeu corretamente ($code)"
+              exit 1
+            fi
+          done
+
+      - name: Estado final
+        if: always()
+        run: docker compose ps -a
+
+      - name: Logs em caso de falha
+        if: failure()
+        run: docker compose logs --tail 80 --no-color
+
+      - name: Limpar imagens antigas do projeto
+        if: success()
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # Remove tags antigas de ghcr.io/<org>/<projeto>-*; as em uso são preservadas
+          # pelo próprio Docker. Rollback baixa a imagem de novo do GHCR.
+          docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep "^ghcr.io/${OWNER}/${COMPOSE_PROJECT_NAME}-" \
+            | xargs -r -n1 docker image rm 2>/dev/null || true
+          docker image prune -f
+
+      - name: Logout e remover .env
+        if: always()
+        run: |
+          docker logout ghcr.io || true
+          rm -f "$(dirname "$COMPOSE_FILE")/.env"

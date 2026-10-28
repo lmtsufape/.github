@@ -1,0 +1,6 @@
+{
+  "name": "Deploy lmtstestes",
+  "description": "Build das imagens no GHCR e deploy no servidor de testes lmtstestes pelo runner da organização.",
+  "iconName": "octicon rocket",
+  "categories": ["Deployment", "Dockerfile"]
+}

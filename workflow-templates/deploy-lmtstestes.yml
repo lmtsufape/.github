@@ -1,0 +1,38 @@
+# Build das imagens no GitHub + deploy no servidor lmtstestes.
+# Ajuste PROJETO e os jobs de build (um por imagem). Guia completo:
+# https://github.com/lmtsufape/.github#deploy-no-lmtstestes
+name: Deploy lmtstestes
+
+on:
+  push:
+    branches: [$default-branch]
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: Tag (SHA) já publicada para reimplantar (rollback). Vazio = build do commit atual.
+        required: false
+        default: ""
+
+jobs:
+  build-app:
+    if: inputs.image-tag == ''
+    permissions:
+      contents: read
+      packages: write
+    uses: lmtsufape/.github/.github/workflows/docker-build-push.yml@main
+    with:
+      image: PROJETO-app
+      context: .
+      tag: ${{ github.sha }}
+
+  deploy:
+    needs: [build-app]
+    if: always() && (needs.build-app.result == 'success' || needs.build-app.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
+    uses: lmtsufape/.github/.github/workflows/deploy-lmtstestes.yml@main
+    with:
+      project: PROJETO
+      image-tag: ${{ inputs.image-tag || github.sha }}
+      health-urls: http://127.0.0.1:PORTA/
