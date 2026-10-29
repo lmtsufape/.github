@@ -2,7 +2,8 @@
 #
 # Roda no runner self-hosted da organização (label "lmtstestes"), que só faz conexões
 # de saída. Fluxo: checkout do compose -> gera .env a partir do secret DEPLOY_ENV_FILE
-# do environment -> pull das imagens do GHCR -> up -d -> verifica URLs -> limpeza.
+# do environment -> pull das imagens do GHCR -> comandos pre-up-run (ex. migrations)
+# -> up -d -> verifica URLs -> limpeza.
 #
 # Requisitos no repositório que chama:
 #   - environment (padrão "homologacao"), com o secret DEPLOY_ENV_FILE (conteúdo do .env) se houver variáveis
@@ -33,6 +34,13 @@ on:
         required: false
         type: string
         default: homologacao
+      pre-up-run:
+        description: >-
+          Comandos, um por linha, rodados com "docker compose run --rm -T" antes de subir os
+          containers novos (ex. "php-fpm php artisan migrate --force"). Falha interrompe o deploy.
+        required: false
+        type: string
+        default: ""
       health-urls:
         description: URLs, uma por linha, que devem responder (status < 500) após o deploy
         required: false
@@ -86,6 +94,19 @@ jobs:
 
       - name: Pull das imagens
         run: docker compose pull --quiet
+
+      - name: Comandos antes de subir
+        if: inputs.pre-up-run != ''
+        env:
+          PRE_UP_RUN: ${{ inputs.pre-up-run }}
+        run: |
+          while IFS= read -r cmd; do
+            [ -z "$cmd" ] && continue
+            echo "::group::$cmd"
+            # shellcheck disable=SC2086
+            docker compose run --rm -T $cmd
+            echo "::endgroup::"
+          done <<< "$PRE_UP_RUN"
 
       - name: Subir containers
         run: docker compose up -d --remove-orphans --wait --wait-timeout 300
